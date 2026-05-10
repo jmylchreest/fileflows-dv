@@ -20,13 +20,18 @@
  * @output 1 OK
  */
 
-const tonemap     = Tonemapping       || 'bt.2390';
-const applyDV     = (ApplyDolbyVision === undefined) ? true : Boolean(ApplyDolbyVision);
-const pixFmt      = PixelFormat       || 'yuv420p10le';
-const crf         = Number.isFinite(Number(X265Crf))    ? Number(X265Crf)    : 18;
-const preset      = X265Preset        || 'medium';
-const maxCll      = Number.isFinite(Number(MaxCll))     ? Number(MaxCll)     : 1000;
-const maxFall     = Number.isFinite(Number(MaxFall))    ? Number(MaxFall)    : 400;
+// Read script parameters defensively so the script also works when invoked
+// outside FileFlows (which auto-defines @param names) — e.g. in plain Node
+// for testing.
+const _p = (n, d) => (typeof globalThis[n] !== 'undefined' && globalThis[n] !== null) ? globalThis[n] : d;
+
+const tonemap = _p('Tonemapping', 'bt.2390');
+const applyDV = Boolean(_p('ApplyDolbyVision', true));
+const pixFmt  = _p('PixelFormat', 'yuv420p10le');
+const crf     = Number.isFinite(Number(_p('X265Crf', 18)))   ? Number(_p('X265Crf', 18))   : 18;
+const preset  = _p('X265Preset', 'medium');
+const maxCll  = Number.isFinite(Number(_p('MaxCll', 1000)))  ? Number(_p('MaxCll', 1000))  : 1000;
+const maxFall = Number.isFinite(Number(_p('MaxFall', 400)))  ? Number(_p('MaxFall', 400))  : 400;
 
 // Rec.2020 D65 master display primaries, reasonable default for consumer HDR10.
 const masterDisplay =

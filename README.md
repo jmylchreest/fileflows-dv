@@ -87,6 +87,13 @@ reuse the same scripts for other profiles or other transcoder configs.
 | `match-dolby-vision-profile.js` | `Variables.dv.profile` (re-probes if unset) | — | `1` match · `2` no match · `3` not DV |
 | `set-libplacebo-options.js` | (script parameters, all optional) | `Variables.LibplaceboFilter`, `Variables.X265Params`, `Variables.X265{Crf,Preset,PixFmt}` | `1` ok |
 | `transcode-libplacebo-hdr10.js` | the Variables above (sensible defaults if unset) | new working file | `1` converted · `2` error |
+| `strip-dolby-vision-rpu.js` | input file (refuses if `Variables.dv.profile === 5`) | new working file | `1` stripped · `2` error · `3` wrong profile (P5) |
+
+Profile 8.x (`bl_compat=1` → HDR10, `=2` → SDR, `=4` → HLG) doesn't need a
+libplacebo re-encode — the base layer plays correctly already; the DV RPU
+is just dynamic metadata that some non-DV players choke on. For those,
+route to `strip-dolby-vision-rpu` for a fast lossless strip instead of the
+libplacebo transcode.
 
 Example flow:
 

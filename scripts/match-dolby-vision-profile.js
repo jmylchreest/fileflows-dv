@@ -11,7 +11,8 @@
  * @output 3 Error / not Dolby Vision
  */
 
-const expected = Number(ExpectedProfile);
+const _expectedRaw = (typeof ExpectedProfile !== 'undefined') ? ExpectedProfile : null;
+const expected = Number(_expectedRaw);
 if (!Number.isFinite(expected)) {
     Logger.ELog('ExpectedProfile parameter is missing or not a number');
     return 3;
