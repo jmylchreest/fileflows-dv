@@ -1,172 +1,167 @@
 # fileflows-dv
 
-A drop-in replacement for the official [`revenz/fileflows`](https://hub.docker.com/r/revenz/fileflows)
-image that bundles [`tvarr-ffmpeg`](https://github.com/jmylchreest/tvarr) — an
-ffmpeg build with **libplacebo + libdovi** — under an isolated `/opt` prefix.
+A small set of [FileFlows](https://fileflows.com) JavaScript flow scripts for
+correct Dolby Vision handling. They run on the **stock** `revenz/fileflows`
+image — no custom Docker build required.
 
-The point: convert **Dolby Vision Profile 5** files to **HDR10 Main10** without
-the green/purple ICtCp tint that you get from a naive libplacebo invocation
-(missing `apply_dolbyvision=true`, or a libplacebo not linked against
-libdovi).
+## Why this exists
+
+FileFlows ships a built-in **Strip DoVi** flow element (in the *Video* plugin).
+It checks whether a video stream carries Dolby Vision and, if so, sets
+`Model.StripDovi = true` on the FFmpeg Builder model. When the FFmpeg Builder
+Executor later runs, that flag becomes a single ffmpeg argument:
+`-bsf:v:0 dovi_rpu=strip=1` — a lossless RPU/EL strip via ffmpeg's
+`dovi_rpu` bitstream filter.
+
+That's the right answer for **Profile 7 / 8.x / 10**: those have an HDR10
+(or SDR / HLG) base layer that plays perfectly on its own, and the DV RPU is
+just dynamic metadata that some non-DV players choke on.
+
+It's the **wrong** answer for **Profile 5**. P5 has no HDR10 fallback — its
+base layer is encoded in **ICtCp**, and the only thing telling a player how
+to interpret those pixels is the RPU. Strip the RPU and you get a 10-bit
+HEVC Main10 stream with no colour transform; players guess BT.709 / BT.2020
+Y'CbCr and you get the classic **purple/green tint**.
+
+The built-in Strip DoVi has no profile guard. If you point a flow at a
+mixed library, eventually it lands on a P5 release and silently produces a
+broken file.
+
+The scripts here:
+
+1. Detect Dolby Vision and surface the **profile** (5, 7, 8.x, 10), not just
+   "yes/no", so a flow can branch on it.
+2. Provide a **profile-aware** strip that refuses to run on P5.
+3. Provide the correct alternative for P5: a libplacebo re-encode with
+   `apply_dolbyvision=true`, which uses libdovi to do the real ICtCp →
+   BT.2020 PQ pixel transform.
+
+Both ffmpeg paths use libraries that are already present in the stock
+`revenz/fileflows` ffmpeg (it bundles `jellyfin-ffmpeg`, built
+`--enable-libplacebo`, with libdovi linked into libplacebo). Nothing extra
+to install.
+
+## Scripts
+
+| Script | Purpose | Outputs |
+|---|---|---|
+| [`detect-dolby-vision.js`](scripts/detect-dolby-vision.js) | Probe with ffprobe, write `Variables.dv.{isDV, profile, blCompat, codecTag}`, route on DV presence | 1 Is DV · 2 Not DV · 3 Error |
+| [`route-dolby-vision-by-profile.js`](scripts/route-dolby-vision-by-profile.js) | Detect + route by profile in a single element. The one most flows want. | 1 Profile 5 (needs transcode) · 2 Profile 7/8.x/10 (safe to strip) · 3 Not DV · 4 Error |
+| [`match-dolby-vision-profile.js`](scripts/match-dolby-vision-profile.js) | `if Variables.dv.profile == ExpectedProfile` — reusable predicate. Re-probes if no cached info. | 1 Match · 2 No match · 3 Not DV/error |
+| [`set-libplacebo-options.js`](scripts/set-libplacebo-options.js) | Stash a libplacebo filter string and matching x265 HDR10 params in Variables for downstream consumers (script or `${VarName}`-substituting flow elements). All inputs have sensible defaults. | 1 OK |
+| [`transcode-libplacebo-hdr10.js`](scripts/transcode-libplacebo-hdr10.js) | Re-encode through `libplacebo apply_dolbyvision=true` to HDR10 Main10. Reads the variables above; falls back to defaults if unset. | 1 Converted · 2 Error |
+| [`strip-dolby-vision-rpu.js`](scripts/strip-dolby-vision-rpu.js) | Lossless RPU strip via `-bsf:v dovi_rpu=strip=1` (the same BSF the built-in StripDoVi uses), **refuses on Profile 5**. | 1 Stripped · 2 Error · 3 Refused (P5) |
+
+All scripts use the FileFlows Flow Script convention: a top-level
+`function Script(...)` entry point with `@param`/`@output` JSDoc tags.
+
+## Install
+
+In the FileFlows UI:
+
+1. **Scripts** (left nav) → **Add** → **Flow Script**.
+2. Paste the contents of one of the `.js` files. The name FileFlows uses
+   comes from the filename of the script; the JSDoc block at the top tells
+   FileFlows about parameters and outputs.
+3. Repeat for each script you want to use. You don't need all six —
+   pick a flow shape below.
+
+## Flow shapes
+
+### Shape A — drop-in replacement for "Strip DoVi"
+
+When all you want is "strip DV if safe, transcode if it would be unsafe":
 
 ```
-ghcr.io/jmylchreest/fileflows-dv:latest
-ghcr.io/jmylchreest/fileflows-dv:<fileflows-version>   # e.g. :24.04
+Input File
+  → route-dolby-vision-by-profile
+      ├─ 1 (Profile 5) ─→ set-libplacebo-options
+      │                    → transcode-libplacebo-hdr10
+      │                        ├─ 1 → Move/Replace Original
+      │                        └─ 2 → Failure
+      ├─ 2 (P7/8.x/10) ─→ strip-dolby-vision-rpu
+      │                    ├─ 1 → Move/Replace Original
+      │                    ├─ 2 → Failure
+      │                    └─ 3 → Failure  (shouldn't happen — P5 routed elsewhere)
+      ├─ 3 (Not DV) ────→ Goto Next
+      └─ 4 (Error) ─────→ Failure
 ```
 
-## How it works
+Five Function elements plus I/O blocks — well inside the free-tier
+30-element-per-flow cap.
 
-* `FROM revenz/fileflows:latest` — keeps the upstream entrypoint, .NET runtime,
-  DockerMods, PUID/PGID logic, ports, env. No behaviour changes for normal
-  flows.
-* tvarr-ffmpeg's `ffmpeg`, `ffprobe`, `/usr/lib`, `/usr/share/vulkan`, and
-  `ld-linux-x86-64.so.2` are copied into `/opt/tvarr-ffmpeg/`.
-* Wrappers at `/usr/local/bin/{ffmpeg,ffprobe}` invoke the bundled binaries
-  through Arch's own dynamic loader with `--library-path` pointed at the
-  bundled libs. This dodges the glibc 2.43 (Arch) vs 2.39 (Ubuntu 24.04) ABI
-  mismatch — the bundled binary never touches the host libc.
-* `/usr/local/bin` precedes `/usr/bin` on `PATH`, so FileFlows' auto-discovery
-  picks up the bundled build with no UI configuration.
+### Shape B — composable, explicit branches
 
-## Free-tier compliance
-
-[FileFlows free tier](https://fileflows.com/pricing) caps you at:
-
-* **1 processing node** — this image runs the internal node only. No external
-  worker pods.
-* **5 flow runners** — concurrency cap; unaffected here.
-* **30 flow elements per flow** — the bundled DV flow uses one Function
-  element plus standard input/route blocks. Well under the cap.
-
-This image deliberately does *not* enable FFNODE-style external worker
-deployments.
-
-## Drop-in for an existing FileFlows manifest
-
-Find the image in your existing FileFlows Deployment and change it. Everything
-else (PVCs, NFS mounts, `gpu.intel.com/i915`, ports, ingress) stays.
-
-```diff
-       containers:
-         - name: fileflows
--          image: revenz/fileflows
-+          image: ghcr.io/jmylchreest/fileflows-dv:latest
-```
-
-A complete worked example (mirroring the layout of the manifest this was built
-to extend) lives at [`examples/fileflows.yaml`](examples/fileflows.yaml).
-
-## Bundled flow scripts
-
-All scripts ship at `/opt/fileflows-dv/scripts/` inside the container and at
-[`scripts/`](scripts/) in this repo. Two flow shapes are supported.
-
-### Shape A — single all-in-one element
-
-Simplest. One Function element that does detect + convert + skip in one go.
-
-| Script | Outputs |
-|---|---|
-| `dv-detect-and-convert.js` | `1` converted · `2` skipped (not P5) · `3` error |
-
-```
-Input File → Function(dv-detect-and-convert) ─┬─ 1 → Move/Replace Original
-                                              ├─ 2 → Goto Next (skip)
-                                              └─ 3 → Failure
-```
-
-### Shape B — composable elements (visual flow logic)
-
-Smaller scripts wired together via FileFlows `Variables`. Lets you express
-`if dv-profile == 5 then transcode else skip` as visible flow branches, and
-reuse the same scripts for other profiles or other transcoder configs.
-
-| Script | Reads | Writes | Outputs |
-|---|---|---|---|
-| `detect-dolby-vision.js` | input file | `Variables.dv.{isDV, profile, blCompat, codecTag}` | `1` is DV · `2` not DV · `3` error |
-| `match-dolby-vision-profile.js` | `Variables.dv.profile` (re-probes if unset) | — | `1` match · `2` no match · `3` not DV |
-| `set-libplacebo-options.js` | (script parameters, all optional) | `Variables.LibplaceboFilter`, `Variables.X265Params`, `Variables.X265{Crf,Preset,PixFmt}` | `1` ok |
-| `transcode-libplacebo-hdr10.js` | the Variables above (sensible defaults if unset) | new working file | `1` converted · `2` error |
-| `strip-dolby-vision-rpu.js` | input file (refuses if `Variables.dv.profile === 5`) | new working file | `1` stripped · `2` error · `3` wrong profile (P5) |
-
-Profile 8.x (`bl_compat=1` → HDR10, `=2` → SDR, `=4` → HLG) doesn't need a
-libplacebo re-encode — the base layer plays correctly already; the DV RPU
-is just dynamic metadata that some non-DV players choke on. For those,
-route to `strip-dolby-vision-rpu` for a fast lossless strip instead of the
-libplacebo transcode.
-
-Example flow:
+When you want the profile predicate visible in the flow:
 
 ```
 Input File
   → detect-dolby-vision
-      ├─ 1 (is DV) → match-dolby-vision-profile [ExpectedProfile=5]
-      │                  ├─ 1 (match) → set-libplacebo-options
-      │                  │                → transcode-libplacebo-hdr10
-      │                  │                    ├─ 1 → Move/Replace Original
-      │                  │                    └─ 2 → Failure
-      │                  ├─ 2 (no match) → Goto Next (skip)
-      │                  └─ 3 (error)    → Failure
-      ├─ 2 (not DV)   → Goto Next (skip)
-      └─ 3 (error)    → Failure
+      ├─ 1 (is DV) ─→ match-dolby-vision-profile [ExpectedProfile=5]
+      │                ├─ 1 (match P5) ──→ set-libplacebo-options
+      │                │                    → transcode-libplacebo-hdr10
+      │                ├─ 2 (other DV) ──→ strip-dolby-vision-rpu
+      │                └─ 3 (error)     ──→ Failure
+      ├─ 2 (not DV) ─→ Goto Next
+      └─ 3 (error)  ─→ Failure
 ```
 
-Five Function elements + I/O blocks — well inside the free-tier 30-element
-cap. The variables set by `set-libplacebo-options` can also be referenced
-from built-in encoder flow elements that take `${VarName}`-style parameter
-substitutions, so you can mix scripts with native FileFlows nodes.
+Same outcome as Shape A but you can wire the P8.x and P7 branches to
+different post-processing if you want.
 
-### Importing in the UI
+### Shape C — integrate with FFmpeg Builder
 
-1. **Scripts** → **Add** → **Flow Script** → name it (e.g. `DV: Detect`),
-   paste the JS contents.
-2. Repeat for each script you want to use.
-3. Build the flow above, wiring the outputs as shown.
-4. Attach a Library that watches your media path.
+`set-libplacebo-options` writes `Variables.LibplaceboFilter` and
+`Variables.X265Params`. Built-in FileFlows flow elements that accept
+`${VarName}`-style substitution (e.g. `FFmpeg Builder: Custom Video Filter`,
+`FFmpeg Builder: Custom Parameters`) can read these directly, so you can
+keep the audio/subtitle/remux logic in the FFmpeg Builder graph and only
+use a script to compute the libplacebo + x265 args.
 
-### Verifying libdovi
+## Verifying your FileFlows ffmpeg has libdovi
 
 ```bash
-docker run --rm ghcr.io/jmylchreest/fileflows-dv:latest \
-  ffmpeg -hide_banner -h filter=libplacebo 2>&1 | grep apply_dolbyvision
+# From whatever shell can reach the FileFlows pod/container
+ffmpeg -hide_banner -h filter=libplacebo | grep apply_dolbyvision
 ```
 
-Should print `apply_dolbyvision <boolean> ...` — confirms libplacebo was
-linked against libdovi at build time.
+You should see `apply_dolbyvision <boolean> ...`. That option only exists
+when libplacebo was compiled against libdovi, which the stock FileFlows
+image's `jellyfin-ffmpeg` is.
 
-Verify the bundled ffmpeg has libdovi support:
+## Free-tier compatibility
 
-```bash
-docker run --rm ghcr.io/jmylchreest/fileflows-dv:latest \
-  ffmpeg -hide_banner -h filter=libplacebo 2>&1 | grep -i dolby
-```
+[FileFlows free tier](https://fileflows.com/pricing) limits:
 
-You should see `apply_dolbyvision` listed.
+- **1 processing node** — these scripts run on the internal node, no
+  external workers needed.
+- **5 concurrent flow runners** — unaffected by the scripts.
+- **30 flow elements per flow** — Shape A uses ~5 + I/O; Shape B uses ~6.
+  Plenty of headroom.
 
-## Tagging & release cadence
+No paid plugins required.
 
-* `:latest` always points at the newest successful build.
-* `:<fileflows-version>` (e.g. `:24.04`) tracks the upstream FileFlows
-  `org.opencontainers.image.version` label.
-* The build workflow runs **nightly**, but only pushes when either upstream
-  image's manifest digest has changed since our previous `:latest`. Manual
-  runs (`workflow_dispatch`) and pushes to `main` always rebuild; manual runs
-  also expose a `force` toggle.
-* Source digests are stamped into the published image as the labels
-  `fileflows-dv.fileflows.digest` / `fileflows-dv.tvarr-ffmpeg.digest`, which
-  is how the workflow decides whether to rebuild.
+## Archive
 
-## Local build
+The `archive/` directory contains an earlier version of this repo that
+shipped a custom FileFlows Docker image (`ghcr.io/jmylchreest/fileflows-dv`)
+layered on `tvarr-ffmpeg`. It turned out the stock `revenz/fileflows` image
+already had the libplacebo+libdovi support we needed. See
+[`archive/README.md`](archive/README.md) for the full story; the Dockerfile,
+wrappers, CI workflow, and example k8s manifest are kept there for
+reference.
 
-```bash
-docker build -t fileflows-dv:dev .
-docker run --rm fileflows-dv:dev ffmpeg -version
-docker run --rm fileflows-dv:dev ffmpeg -hide_banner -h filter=libplacebo \
-  2>&1 | grep apply_dolbyvision
-```
+## Credits / references
+
+- [FileFlows](https://fileflows.com) (Strip DoVi behaviour confirmed by
+  decompiling `VideoNodes.dll` → `FfmpegBuilderStripDovi.cs`)
+- [libplacebo](https://github.com/haasn/libplacebo) (HDR / DV tone-mapping
+  filter)
+- [libdovi](https://github.com/quietvoid/dovi_tool) (Dolby Vision metadata
+  parsing — what makes `apply_dolbyvision=true` actually transform pixels)
+- [jellyfin-ffmpeg](https://github.com/jellyfin/jellyfin-ffmpeg) (the
+  ffmpeg build shipped with `revenz/fileflows`)
 
 ## License
 
-MIT. tvarr-ffmpeg and FileFlows retain their own licences; this repo ships no
-upstream binaries directly — they are pulled at build time from each
-project's published image.
+MIT — see [LICENSE](LICENSE).
