@@ -1,0 +1,17 @@
+#!/bin/sh
+# Wrapper for tvarr-ffmpeg's ffmpeg binary, using its own dynamic loader and
+# library set so it stays ABI-isolated from the FileFlows host image (Ubuntu).
+#
+# Sets up:
+#   - LIBVA_DRIVERS_PATH so VAAPI driver lookup hits the bundled DRI dir
+#   - VK_ICD_FILENAMES so Vulkan loader uses the bundled ICDs (libplacebo
+#     accelerated tonemapping). Paths inside the JSONs are relative; the
+#     dynamic linker resolves them via --library-path below.
+
+PREFIX=/opt/tvarr-ffmpeg
+export LIBVA_DRIVERS_PATH="${PREFIX}/usr/lib/dri"
+export VK_ICD_FILENAMES="${PREFIX}/usr/share/vulkan/icd.d/intel_icd.json:${PREFIX}/usr/share/vulkan/icd.d/radeon_icd.json"
+
+exec "${PREFIX}/lib/ld-linux-x86-64.so.2" \
+    --library-path "${PREFIX}/usr/lib" \
+    "${PREFIX}/usr/bin/ffmpeg.real" "$@"

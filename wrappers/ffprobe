@@ -1,0 +1,10 @@
+#!/bin/sh
+# See wrappers/ffmpeg for context.
+
+PREFIX=/opt/tvarr-ffmpeg
+export LIBVA_DRIVERS_PATH="${PREFIX}/usr/lib/dri"
+export VK_ICD_FILENAMES="${PREFIX}/usr/share/vulkan/icd.d/intel_icd.json:${PREFIX}/usr/share/vulkan/icd.d/radeon_icd.json"
+
+exec "${PREFIX}/lib/ld-linux-x86-64.so.2" \
+    --library-path "${PREFIX}/usr/lib" \
+    "${PREFIX}/usr/bin/ffprobe.real" "$@"

@@ -1,0 +1,157 @@
+name: Build & Publish
+
+on:
+  schedule:
+    # Nightly at 03:17 UTC (offset to dodge the top-of-hour rush)
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Force a rebuild even when upstream digests are unchanged
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - 'wrappers/**'
+      - 'scripts/**'
+      - '.github/workflows/build.yml'
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+  TVARR_REF: ghcr.io/jmylchreest/tvarr-ffmpeg:latest
+  FILEFLOWS_REF: revenz/fileflows:latest
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Resolve digests of both upstream images and the FileFlows version
+      # label. We prefer `docker buildx imagetools inspect` over crane/skopeo
+      # because buildx is already set up.
+      - name: Resolve upstream image metadata
+        id: upstream
+        run: |
+          set -euo pipefail
+
+          ff_digest=$(docker buildx imagetools inspect "${FILEFLOWS_REF}" \
+                       --format '{{ .Manifest.Digest }}')
+          tv_digest=$(docker buildx imagetools inspect "${TVARR_REF}" \
+                       --format '{{ .Manifest.Digest }}')
+
+          # Pull the FileFlows version label out of the image config. Falls
+          # back to the short digest if the label is missing.
+          ff_version=$(docker buildx imagetools inspect "${FILEFLOWS_REF}" \
+                        --format '{{ index .Image.Config.Labels "org.opencontainers.image.version" }}' \
+                        2>/dev/null || true)
+          if [ -z "${ff_version}" ] || [ "${ff_version}" = "<no value>" ]; then
+            ff_version="${ff_digest#sha256:}"
+            ff_version="${ff_version:0:12}"
+          fi
+
+          echo "ff_digest=${ff_digest}"   >> "$GITHUB_OUTPUT"
+          echo "tv_digest=${tv_digest}"   >> "$GITHUB_OUTPUT"
+          echo "ff_version=${ff_version}" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Upstream"
+            echo "- FileFlows: \`${FILEFLOWS_REF}\` @ \`${ff_digest}\` (version: \`${ff_version}\`)"
+            echo "- tvarr-ffmpeg: \`${TVARR_REF}\` @ \`${tv_digest}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Decide whether to build. We skip iff:
+      #   - this is a scheduled run (not a push / manual / forced)
+      #   - both upstream digests match the labels on our current :latest
+      - name: Decide whether to rebuild
+        id: decide
+        run: |
+          set -euo pipefail
+          force="${{ github.event.inputs.force || 'false' }}"
+          event="${{ github.event_name }}"
+
+          if [ "${event}" != "schedule" ] || [ "${force}" = "true" ]; then
+            echo "rebuild=true" >> "$GITHUB_OUTPUT"
+            echo "reason=trigger=${event} force=${force}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Scheduled run — compare upstream digests to those baked into our
+          # current :latest as labels.
+          if ! docker buildx imagetools inspect "${IMAGE}:latest" >/dev/null 2>&1; then
+            echo "rebuild=true" >> "$GITHUB_OUTPUT"
+            echo "reason=no_existing_latest" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          existing_ff=$(docker buildx imagetools inspect "${IMAGE}:latest" \
+            --format '{{ index .Image.Config.Labels "fileflows-dv.fileflows.digest" }}' \
+            2>/dev/null || echo "")
+          existing_tv=$(docker buildx imagetools inspect "${IMAGE}:latest" \
+            --format '{{ index .Image.Config.Labels "fileflows-dv.tvarr-ffmpeg.digest" }}' \
+            2>/dev/null || echo "")
+
+          if [ "${existing_ff}" = "${{ steps.upstream.outputs.ff_digest }}" ] \
+             && [ "${existing_tv}" = "${{ steps.upstream.outputs.tv_digest }}" ]; then
+            echo "rebuild=false" >> "$GITHUB_OUTPUT"
+            echo "reason=upstream_unchanged" >> "$GITHUB_OUTPUT"
+          else
+            echo "rebuild=true" >> "$GITHUB_OUTPUT"
+            echo "reason=upstream_changed" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip notice
+        if: steps.decide.outputs.rebuild != 'true'
+        run: |
+          echo "Skipping rebuild: ${{ steps.decide.outputs.reason }}" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build & push
+        if: steps.decide.outputs.rebuild == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # Pin to digests so the build is reproducible against the metadata
+          # we recorded in the previous step.
+          build-args: |
+            TVARR_FFMPEG_REF=ghcr.io/jmylchreest/tvarr-ffmpeg@${{ steps.upstream.outputs.tv_digest }}
+            FILEFLOWS_REF=revenz/fileflows@${{ steps.upstream.outputs.ff_digest }}
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ steps.upstream.outputs.ff_version }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.upstream.outputs.ff_version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            fileflows-dv.fileflows.digest=${{ steps.upstream.outputs.ff_digest }}
+            fileflows-dv.tvarr-ffmpeg.digest=${{ steps.upstream.outputs.tv_digest }}
+            fileflows-dv.fileflows.version=${{ steps.upstream.outputs.ff_version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build summary
+        if: steps.decide.outputs.rebuild == 'true'
+        run: |
+          {
+            echo "## Build"
+            echo "- Tags: \`${IMAGE}:latest\`, \`${IMAGE}:${{ steps.upstream.outputs.ff_version }}\`"
+            echo "- Reason: \`${{ steps.decide.outputs.reason }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

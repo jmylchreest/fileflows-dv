@@ -1,0 +1,98 @@
+# Example: drop-in usage in a Kubernetes manifest.
+#
+# Replace placeholder values (`<your-namespace>`, `<storage-class>`,
+# `<nfs-server>`, the storage paths, the resource requests/limits) with the
+# values that match your cluster. The only thing this example demonstrates is
+# the image swap from `revenz/fileflows` to `ghcr.io/jmylchreest/fileflows-dv`
+# — every other field follows whatever you already have.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fileflows
+  namespace: <your-namespace>
+data:
+  PUID: "1000"
+  PGID: "1000"
+  TZ: "UTC"
+  NodeName: "fileflows-server"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc-fileflows-data
+  namespace: <your-namespace>
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: <storage-class>
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fileflows
+  namespace: <your-namespace>
+  labels:
+    app.kubernetes.io/name: fileflows
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fileflows
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fileflows
+    spec:
+      containers:
+        - name: fileflows
+          # The only change from the stock FileFlows manifest:
+          image: ghcr.io/jmylchreest/fileflows-dv:latest
+          envFrom:
+            - configMapRef:
+                name: fileflows
+          ports:
+            - containerPort: 5000
+              name: http
+          resources:
+            requests:
+              cpu: 100m
+              memory: 500Mi
+            limits:
+              cpu: 4000m
+              memory: 6Gi
+              # If you have an Intel iGPU plugin installed:
+              # gpu.intel.com/i915: "1"
+          volumeMounts:
+            - { name: pvc-fileflows-data, mountPath: /app/Data }
+            - { name: temp,               mountPath: /temp   }
+            - { name: media,              mountPath: /media  }
+      volumes:
+        - name: pvc-fileflows-data
+          persistentVolumeClaim:
+            claimName: pvc-fileflows-data
+        - name: temp
+          emptyDir: {}
+        # Replace with whatever volume backs your media library — NFS, CSI,
+        # hostPath, etc. ReadWriteMany is sensible if you scale the pod or
+        # share the library with other workloads.
+        - name: media
+          persistentVolumeClaim:
+            claimName: pvc-media
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fileflows-web
+  namespace: <your-namespace>
+spec:
+  selector:
+    app.kubernetes.io/name: fileflows
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: http
