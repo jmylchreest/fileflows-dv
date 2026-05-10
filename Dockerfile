@@ -37,9 +37,10 @@ RUN chmod +x /opt/tvarr-ffmpeg/usr/bin/ffmpeg /opt/tvarr-ffmpeg/usr/bin/ffprobe 
     && ln -sf /opt/tvarr-ffmpeg/usr/bin/ffmpeg  /usr/local/bin/ffmpeg \
     && ln -sf /opt/tvarr-ffmpeg/usr/bin/ffprobe /usr/local/bin/ffprobe
 
-# Bundled DV detection/conversion script. Mirror it into the FileFlows
-# scripts directory so users can import it via the UI without copy-paste.
-COPY scripts/dv-detect-and-convert.js /opt/fileflows-dv/scripts/dv-detect-and-convert.js
+# Bundled flow scripts: an all-in-one DV detect/convert plus a set of
+# composable elements (detect / match-profile / set-options / transcode).
+# Users import whichever they want from the FileFlows UI.
+COPY scripts/ /opt/fileflows-dv/scripts/
 
 LABEL org.opencontainers.image.title="fileflows-dv" \
       org.opencontainers.image.description="FileFlows + tvarr-ffmpeg (libplacebo + libdovi) for Dolby Vision Profile 5 → HDR10 conversion" \

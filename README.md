@@ -56,31 +56,76 @@ else (PVCs, NFS mounts, `gpu.intel.com/i915`, ports, ingress) stays.
 A complete worked example (mirroring the layout of the manifest this was built
 to extend) lives at [`examples/fileflows.yaml`](examples/fileflows.yaml).
 
-## Using the bundled DV flow script
+## Bundled flow scripts
 
-The DV detect/convert JS lives at `/opt/fileflows-dv/scripts/dv-detect-and-convert.js`
-inside the container, and at [`scripts/dv-detect-and-convert.js`](scripts/dv-detect-and-convert.js)
-in this repo.
+All scripts ship at `/opt/fileflows-dv/scripts/` inside the container and at
+[`scripts/`](scripts/) in this repo. Two flow shapes are supported.
 
-In the FileFlows UI:
+### Shape A — single all-in-one element
 
-1. **Scripts** → **Add** → **Flow Script** → name it `DV P5 → HDR10`, paste
-   the contents of `dv-detect-and-convert.js`.
-2. Build a flow:
-   * **Input File** → **Function** (your script) → outputs:
-     * `1 Converted` → **Move/Replace Original File**
-     * `2 Skipped` → **Goto next** (or terminate as success)
-     * `3 Error` → **Failure**
-3. Wire the flow up to a Library that watches your media path.
+Simplest. One Function element that does detect + convert + skip in one go.
 
-The script:
+| Script | Outputs |
+|---|---|
+| `dv-detect-and-convert.js` | `1` converted · `2` skipped (not P5) · `3` error |
 
-* Probes with `ffprobe` and inspects `side_data_list` for a DOVI configuration
-  record.
-* If `dv_profile == 5`, transcodes with libplacebo (`apply_dolbyvision=true`)
-  to HDR10 BT.2020 PQ Main10 and copies audio/subs.
-* Profiles 7/8 (which have an HDR10-compatible base layer) are left alone.
-* Non-DV files are left alone.
+```
+Input File → Function(dv-detect-and-convert) ─┬─ 1 → Move/Replace Original
+                                              ├─ 2 → Goto Next (skip)
+                                              └─ 3 → Failure
+```
+
+### Shape B — composable elements (visual flow logic)
+
+Smaller scripts wired together via FileFlows `Variables`. Lets you express
+`if dv-profile == 5 then transcode else skip` as visible flow branches, and
+reuse the same scripts for other profiles or other transcoder configs.
+
+| Script | Reads | Writes | Outputs |
+|---|---|---|---|
+| `detect-dolby-vision.js` | input file | `Variables.dv.{isDV, profile, blCompat, codecTag}` | `1` is DV · `2` not DV · `3` error |
+| `match-dolby-vision-profile.js` | `Variables.dv.profile` (re-probes if unset) | — | `1` match · `2` no match · `3` not DV |
+| `set-libplacebo-options.js` | (script parameters, all optional) | `Variables.LibplaceboFilter`, `Variables.X265Params`, `Variables.X265{Crf,Preset,PixFmt}` | `1` ok |
+| `transcode-libplacebo-hdr10.js` | the Variables above (sensible defaults if unset) | new working file | `1` converted · `2` error |
+
+Example flow:
+
+```
+Input File
+  → detect-dolby-vision
+      ├─ 1 (is DV) → match-dolby-vision-profile [ExpectedProfile=5]
+      │                  ├─ 1 (match) → set-libplacebo-options
+      │                  │                → transcode-libplacebo-hdr10
+      │                  │                    ├─ 1 → Move/Replace Original
+      │                  │                    └─ 2 → Failure
+      │                  ├─ 2 (no match) → Goto Next (skip)
+      │                  └─ 3 (error)    → Failure
+      ├─ 2 (not DV)   → Goto Next (skip)
+      └─ 3 (error)    → Failure
+```
+
+Five Function elements + I/O blocks — well inside the free-tier 30-element
+cap. The variables set by `set-libplacebo-options` can also be referenced
+from built-in encoder flow elements that take `${VarName}`-style parameter
+substitutions, so you can mix scripts with native FileFlows nodes.
+
+### Importing in the UI
+
+1. **Scripts** → **Add** → **Flow Script** → name it (e.g. `DV: Detect`),
+   paste the JS contents.
+2. Repeat for each script you want to use.
+3. Build the flow above, wiring the outputs as shown.
+4. Attach a Library that watches your media path.
+
+### Verifying libdovi
+
+```bash
+docker run --rm ghcr.io/jmylchreest/fileflows-dv:latest \
+  ffmpeg -hide_banner -h filter=libplacebo 2>&1 | grep apply_dolbyvision
+```
+
+Should print `apply_dolbyvision <boolean> ...` — confirms libplacebo was
+linked against libdovi at build time.
 
 Verify the bundled ffmpeg has libdovi support:
 
