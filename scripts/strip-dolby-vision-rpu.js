@@ -13,9 +13,13 @@
  *              would leave wrong-coloured pixels. Use
  *              `transcode-libplacebo-hdr10` for that.
  *
- *              HEVC NAL unit types removed:
- *                62 = UNSPEC_62 (Dolby Vision RPU)
- *                63 = UNSPEC_63 (Dolby Vision Enhancement Layer)
+ *              Uses ffmpeg's `dovi_rpu=strip=1` bitstream filter (the
+ *              DV-aware BSF that ships with libavcodec). It removes the
+ *              DV RPU NAL units AND clears the DOVI configuration record
+ *              from the codec metadata — `filter_units=remove_types=62|63`
+ *              would only do the former, leaving a stale container flag
+ *              behind. FileFlows' built-in StripDovi flow element uses
+ *              the same BSF.
  *
  * @output 1 Stripped
  * @output 2 Error
@@ -45,7 +49,7 @@ const result = Flow.Execute({
         '-map', '0',
         '-map', '-0:d',                          // drop any data streams
         '-c', 'copy',                             // no re-encode
-        '-bsf:v', 'filter_units=remove_types=62|63',
+        '-bsf:v', 'dovi_rpu=strip=1',
         output
     ]
 });
