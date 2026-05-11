@@ -116,29 +116,33 @@ primary-audio selection, sub titling, remux container) to still apply on
 the P5 branch, you can keep the work inside the Builder pipeline instead
 of bypassing it. **`FFmpeg Builder: Custom Parameters` is free** (the
 similarly-named `Custom Video Filter` is paid — don't confuse them) and
-it accepts `${VarName}` substitution.
+it accepts FileFlows variable substitution with **`{VarName}` syntax —
+single curly braces, no leading `$`**. Empirically confirmed: writing
+`${VarName}` leaves a literal `$` in the emitted ffmpeg command and
+breaks the encode.
 
 For the P5 branch:
 
 ```
 route-dolby-vision-by-profile
   ├─ 1 (P5) → set-libplacebo-options → FFmpeg Builder: Custom Parameters → FFmpeg Builder: Executor
-  │              [Parameters: -vf ${LibplaceboFilter} -c:v libx265
-  │                           -preset ${X265Preset} -crf ${X265Crf}
-  │                           -pix_fmt ${X265PixFmt} -x265-params ${X265Params}
+  │              [Parameters: -vf {LibplaceboFilter} -c:v libx265
+  │                           -preset {X265Preset} -crf {X265Crf}
+  │                           -pix_fmt {X265PixFmt} -x265-params {X265Params}
   │               Force Encode: ON]
   ├─ 2 (P7/8.x/10) → FFmpeg Builder: Strip DoVi → FFmpeg Builder: Executor
   └─ 3 (Not DV) ─→ FFmpeg Builder: Executor   (or skip)
 ```
 
-**Caveat**: don't put `FFmpeg Builder: Video Encode Advanced` upstream of
-the route element if you're using this shape. Its codec/preset/CRF
-settings will fight the Custom Parameters in the P5 branch — Builder
-stream parameters get appended after Custom Parameters in the compiled
-ffmpeg command, so whichever runs last wins, and the result is hard to
-reason about. Easiest: only place `Video Encode Advanced` in the branches
-that should actually re-encode (not the P7/8.x strip path either — that's
-a stream copy + BSF, no encode needed).
+**Caveat — confirmed by runner log**: do not place any `FFmpeg Builder:
+Video Encode*` element upstream of the route. Its stream parameters get
+appended *after* Custom Parameters in the compiled ffmpeg invocation, so
+the encoder it picks (often `hevc_qsv` on Intel iGPU under "Automatic")
+wins on `-c:v`, the `-x265-params` becomes dangling, and you'll see
+ffmpeg log "*Multiple -codec/-c/... options specified for stream 0, only
+the last option '-codec:v:0 hevc_qsv' will be used.*" If you want a HEVC
+encode on the non-P5 branches, drop the `Video Encode` element *into
+each of those branches individually*, not on the trunk.
 
 This way the rest of your Builder chain (Default Language, Primary Audio,
 Fall Back Audio, Set Audio/Subtitle Titles, Clear Video Title, Remux to
