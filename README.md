@@ -109,18 +109,41 @@ Input File
 Same outcome as Shape A but you can wire the P8.x and P7 branches to
 different post-processing if you want.
 
-### A note on FFmpeg Builder integration
+### Shape C — integrate with FFmpeg Builder (free-tier)
 
-`set-libplacebo-options` also writes `Variables.LibplaceboFilter` and
-`Variables.X265Params` so you can in theory inject them into the FFmpeg
-Builder model via `${VarName}` substitution — `FFmpeg Builder: Custom
-Video Filter` and `FFmpeg Builder: Custom Parameters` accept that syntax.
-The catch: those two elements are part of the **paid tier**, not the
-free one. If you only have the free plan, stick with Shape A or B and
-let `transcode-libplacebo-hdr10` run ffmpeg directly. The audio /
-subtitle / language handling that a Builder graph would have done can be
-folded into a separate flow step (or, if you really need it inline, into
-a custom Function script that wraps ffmpeg with the right `-map` args).
+If you want the rest of your FFmpeg Builder graph (audio language fixes,
+primary-audio selection, sub titling, remux container) to still apply on
+the P5 branch, you can keep the work inside the Builder pipeline instead
+of bypassing it. **`FFmpeg Builder: Custom Parameters` is free** (the
+similarly-named `Custom Video Filter` is paid — don't confuse them) and
+it accepts `${VarName}` substitution.
+
+For the P5 branch:
+
+```
+route-dolby-vision-by-profile
+  ├─ 1 (P5) → set-libplacebo-options → FFmpeg Builder: Custom Parameters → FFmpeg Builder: Executor
+  │              [Parameters: -vf ${LibplaceboFilter} -c:v libx265
+  │                           -preset ${X265Preset} -crf ${X265Crf}
+  │                           -pix_fmt ${X265PixFmt} -x265-params ${X265Params}
+  │               Force Encode: ON]
+  ├─ 2 (P7/8.x/10) → FFmpeg Builder: Strip DoVi → FFmpeg Builder: Executor
+  └─ 3 (Not DV) ─→ FFmpeg Builder: Executor   (or skip)
+```
+
+**Caveat**: don't put `FFmpeg Builder: Video Encode Advanced` upstream of
+the route element if you're using this shape. Its codec/preset/CRF
+settings will fight the Custom Parameters in the P5 branch — Builder
+stream parameters get appended after Custom Parameters in the compiled
+ffmpeg command, so whichever runs last wins, and the result is hard to
+reason about. Easiest: only place `Video Encode Advanced` in the branches
+that should actually re-encode (not the P7/8.x strip path either — that's
+a stream copy + BSF, no encode needed).
+
+This way the rest of your Builder chain (Default Language, Primary Audio,
+Fall Back Audio, Set Audio/Subtitle Titles, Clear Video Title, Remux to
+MKV) still applies to every branch including P5, and only the video
+encode pipeline differs per branch.
 
 ## Verifying your FileFlows ffmpeg has libdovi
 
@@ -143,8 +166,9 @@ image's `jellyfin-ffmpeg` is.
 - **30 flow elements per flow** — Shape A uses ~5 + I/O; Shape B uses ~6.
   Plenty of headroom.
 - **Free flow elements only** — these scripts are JS Function elements,
-  which are free. They do *not* depend on `FFmpeg Builder: Custom Video
-  Filter` / `Custom Parameters` (those are paid).
+  which are free. Shapes A and B use Function elements exclusively. Shape
+  C also uses `FFmpeg Builder: Custom Parameters` (free). The similarly-
+  named `FFmpeg Builder: Custom Video Filter` is paid — not used here.
 
 ## Archive
 
