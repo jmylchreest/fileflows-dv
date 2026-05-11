@@ -23,8 +23,8 @@
  * Variables written (same as detect-dolby-vision):
  *   Variables.dv.isDV, .profile, .blCompat, .codecTag
  *
- * @output Profile 5 — needs libplacebo transcode
- * @output Profile 7/8.x/10 — safe to strip RPU
+ * @output Profile 5 (transcode)
+ * @output Profile 7, 8.x, 10 (strip)
  * @output Not Dolby Vision
  * @output Error
  */

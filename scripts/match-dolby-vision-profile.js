@@ -8,7 +8,7 @@
  *
  * @output Match
  * @output No match
- * @output Not Dolby Vision / error
+ * @output Not Dolby Vision
  */
 function Script(ExpectedProfile) {
     var expected = Number(ExpectedProfile);

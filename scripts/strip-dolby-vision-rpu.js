@@ -18,7 +18,7 @@
  *
  * @output Stripped
  * @output Error
- * @output Refused (Profile 5 — use libplacebo transcode instead)
+ * @output Refused (Profile 5)
  */
 function Script() {
     var ffmpeg = Flow.GetToolPath('ffmpeg') || 'ffmpeg';
