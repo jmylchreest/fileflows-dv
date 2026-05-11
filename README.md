@@ -109,14 +109,18 @@ Input File
 Same outcome as Shape A but you can wire the P8.x and P7 branches to
 different post-processing if you want.
 
-### Shape C — integrate with FFmpeg Builder
+### A note on FFmpeg Builder integration
 
-`set-libplacebo-options` writes `Variables.LibplaceboFilter` and
-`Variables.X265Params`. Built-in FileFlows flow elements that accept
-`${VarName}`-style substitution (e.g. `FFmpeg Builder: Custom Video Filter`,
-`FFmpeg Builder: Custom Parameters`) can read these directly, so you can
-keep the audio/subtitle/remux logic in the FFmpeg Builder graph and only
-use a script to compute the libplacebo + x265 args.
+`set-libplacebo-options` also writes `Variables.LibplaceboFilter` and
+`Variables.X265Params` so you can in theory inject them into the FFmpeg
+Builder model via `${VarName}` substitution — `FFmpeg Builder: Custom
+Video Filter` and `FFmpeg Builder: Custom Parameters` accept that syntax.
+The catch: those two elements are part of the **paid tier**, not the
+free one. If you only have the free plan, stick with Shape A or B and
+let `transcode-libplacebo-hdr10` run ffmpeg directly. The audio /
+subtitle / language handling that a Builder graph would have done can be
+folded into a separate flow step (or, if you really need it inline, into
+a custom Function script that wraps ffmpeg with the right `-map` args).
 
 ## Verifying your FileFlows ffmpeg has libdovi
 
@@ -138,8 +142,9 @@ image's `jellyfin-ffmpeg` is.
 - **5 concurrent flow runners** — unaffected by the scripts.
 - **30 flow elements per flow** — Shape A uses ~5 + I/O; Shape B uses ~6.
   Plenty of headroom.
-
-No paid plugins required.
+- **Free flow elements only** — these scripts are JS Function elements,
+  which are free. They do *not* depend on `FFmpeg Builder: Custom Video
+  Filter` / `Custom Parameters` (those are paid).
 
 ## Archive
 
