@@ -48,7 +48,8 @@ to install.
 | [`detect-dolby-vision.js`](scripts/detect-dolby-vision.js) | Probe with ffprobe, write `Variables.dv.{isDV, profile, blCompat, codecTag}`, route on DV presence | 1 Is DV · 2 Not DV · 3 Error |
 | [`route-dolby-vision-by-profile.js`](scripts/route-dolby-vision-by-profile.js) | Detect + route by profile in a single element. The one most flows want. | 1 Profile 5 (needs transcode) · 2 Profile 7/8.x/10 (safe to strip) · 3 Not DV · 4 Error |
 | [`match-dolby-vision-profile.js`](scripts/match-dolby-vision-profile.js) | `if Variables.dv.profile == ExpectedProfile` — reusable predicate. Re-probes if no cached info. | 1 Match · 2 No match · 3 Not DV/error |
-| [`set-libplacebo-options.js`](scripts/set-libplacebo-options.js) | Stash a libplacebo filter string and matching x265 HDR10 params in Variables for downstream consumers (script or `${VarName}`-substituting flow elements). All inputs have sensible defaults. | 1 OK |
+| [`set-libplacebo-options.js`](scripts/set-libplacebo-options.js) | Stash a libplacebo filter string and matching x265 HDR10 params in Variables for downstream consumers (script or `{VarName}`-substituting Custom Parameters). All inputs have sensible defaults. | 1 OK |
+| [`set-hevc-qsv-options.js`](scripts/set-hevc-qsv-options.js) | Sibling for Intel-iGPU hardware encode via `hevc_qsv` — libplacebo still does the DV transform, hevc_qsv does the encode. Much faster than libx265 on Intel hardware; tradeoff is no HDR10 mastering-display SEI metadata. | 1 OK |
 | [`transcode-libplacebo-hdr10.js`](scripts/transcode-libplacebo-hdr10.js) | Re-encode through `libplacebo apply_dolbyvision=true` to HDR10 Main10. Reads the variables above; falls back to defaults if unset. | 1 Converted · 2 Error |
 | [`strip-dolby-vision-rpu.js`](scripts/strip-dolby-vision-rpu.js) | Lossless RPU strip via `-bsf:v dovi_rpu=strip=1` (the same BSF the built-in StripDoVi uses), **refuses on Profile 5**. | 1 Stripped · 2 Error · 3 Refused (P5) |
 
