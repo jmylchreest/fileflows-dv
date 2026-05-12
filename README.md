@@ -123,6 +123,8 @@ breaks the encode.
 
 For the P5 branch:
 
+**Variant A — software libx265 (slow CPU, baked HDR10 mastering metadata)**
+
 ```
 route-dolby-vision-by-profile
   ├─ 1 (P5) → set-libplacebo-options → FFmpeg Builder: Custom Parameters → FFmpeg Builder: Executor
@@ -133,6 +135,24 @@ route-dolby-vision-by-profile
   ├─ 2 (P7/8.x/10) → FFmpeg Builder: Strip DoVi → FFmpeg Builder: Executor
   └─ 3 (Not DV) ─→ FFmpeg Builder: Executor   (or skip)
 ```
+
+**Variant B — Intel-iGPU `hevc_qsv` (near-realtime on iGPU, no master-display SEI)**
+
+```
+route-dolby-vision-by-profile
+  ├─ 1 (P5) → set-hevc-qsv-options → FFmpeg Builder: Custom Parameters → FFmpeg Builder: Executor
+  │              [Parameters: -vf {LibplaceboFilter} -c:v hevc_qsv
+  │                           -global_quality {QsvGlobalQuality}
+  │                           -load_plugin hevc_hw -preset {QsvPreset}
+  │                           -profile:v main10 -pix_fmt {QsvPixFmt}
+  │                           -color_primaries bt2020 -color_trc smpte2084
+  │                           -colorspace bt2020nc
+  │               Force Encode: ON]
+  ├─ 2 (P7/8.x/10) → FFmpeg Builder: Strip DoVi → FFmpeg Builder: Executor
+  └─ 3 (Not DV) ─→ FFmpeg Builder: Executor   (or skip)
+```
+
+For Variant B, **do not add `FFmpeg Builder: Disable Intel QSV`** to the P5 branch — the QSV-bridging filter chain (`hwdownload,format=p010le,...,hwupload`) needs the input frames to be in QSV hardware buffers. For Variant A, on an Intel-iGPU host you *do* want `Disable Intel QSV` on the P5 branch to force software decode so libplacebo gets software frames it can read directly.
 
 **Caveat — confirmed by runner log**: do not place any `FFmpeg Builder:
 Video Encode*` element upstream of the route. Its stream parameters get

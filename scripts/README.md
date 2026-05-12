@@ -105,6 +105,47 @@ Every parameter is optional. Leaving them all at the FileFlows-supplied defaults
 
 ---
 
+## `set-hevc-qsv-options.js`
+
+Sibling to `set-libplacebo-options.js` for users with Intel iGPU + QSV hardware encode available. Same DV → HDR10 transform via libplacebo, but the encode happens on the iGPU through `hevc_qsv` (much faster than CPU libx265 — typically near realtime on modern Intel hardware).
+
+The filter chain it emits is wrapped with `hwdownload,format=p010le,...,hwupload=extra_hw_frames=64` so it bridges QSV hardware-decoded input frames through libplacebo's CPU pipeline and back into QSV hardware buffers for the encode.
+
+**Tradeoff vs libx265**: HDR10 VUI tags (BT.2020 / SMPTE 2084 / BT.2020nc) survive in the encoded bitstream, but the HDR10 *mastering display* SEI metadata (`master-display=...`, `max-cll=...`) does **not** — the hevc_qsv encoder has no equivalent flag. Most TVs derive HDR display correctly from VUI + PQ pixel values alone; mastering metadata is a per-title peak-luma hint. If you need it baked in, stay on libx265 (`set-libplacebo-options`).
+
+**Important**: don't pair this with `FFmpeg Builder: Disable Intel QSV` on the same branch. The script's `hwdownload` filter requires QSV decode to be in effect; with QSV disabled it would error on software input.
+
+**Parameters**
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `Tonemapping` | string | `bt.2390` | libplacebo tonemap curve. |
+| `GlobalQuality` | int | `18` | hevc_qsv quality on the 0–51 scale (lower = better). |
+| `Preset` | string | `slow` | hevc_qsv preset (`veryfast`..`veryslow`). |
+
+**Variables written**
+
+| Name | Used by |
+|---|---|
+| `Variables.LibplaceboFilter` | Custom Parameters `-vf` |
+| `Variables.QsvGlobalQuality` | `-global_quality {QsvGlobalQuality}` |
+| `Variables.QsvPreset` | `-preset {QsvPreset}` |
+| `Variables.QsvPixFmt` | `-pix_fmt {QsvPixFmt}` (`p010le`) |
+
+**Companion Custom Parameters string**
+
+```
+-vf {LibplaceboFilter} -c:v hevc_qsv -global_quality {QsvGlobalQuality} -load_plugin hevc_hw -preset {QsvPreset} -profile:v main10 -pix_fmt {QsvPixFmt} -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc
+```
+
+**Outputs**
+
+| # | Label | When |
+|---|---|---|
+| 1 | `OK` | Always. |
+
+---
+
 ## `transcode-libplacebo-hdr10.js`
 
 Re-encode the working file through libplacebo with `apply_dolbyvision=true` to produce Main10 HDR10 BT.2020 PQ output. This is the path Dolby Vision Profile 5 needs: its base layer is in ICtCp and stripping the RPU alone leaves wrong-coloured pixels.
