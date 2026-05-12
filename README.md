@@ -124,46 +124,81 @@ breaks the encode.
 
 For the P5 branch:
 
+Both variants below need an `FFmpeg Builder: Video Encode Advanced`
+element on the P5 branch to commit a video codec into the Builder model
+— **without it the Builder defaults to `-c:v:0 copy` for the video
+stream**, which then conflicts with the libplacebo filter (ffmpeg: "*Filtering and streamcopy cannot be used together*"). Custom Parameters
+alone can't set the model's codec; setting `-c:v libx265` in the params
+string is silently overridden by the Builder's per-stream copy default.
+
 **Variant A — software libx265 (slow CPU, baked HDR10 mastering metadata)**
 
 ```
 route-dolby-vision-by-profile
-  ├─ 1 (P5) → set-libplacebo-options → FFmpeg Builder: Custom Parameters → FFmpeg Builder: Executor
-  │              [Parameters: -vf {LibplaceboFilter} -c:v libx265
-  │                           -preset {X265Preset} -crf {X265Crf}
-  │                           -pix_fmt {X265PixFmt} -x265-params {X265Params}
-  │               Force Encode: ON]
+  ├─ 1 (P5) → FFmpeg Builder: Disable Intel QSV
+  │           → set-libplacebo-options
+  │           → FFmpeg Builder: Video Encode Advanced
+  │                (Codec=HEVC, Encoder=libx265 EXPLICITLY, Quality=22, Speed=Medium)
+  │           → FFmpeg Builder: Custom Parameters
+  │                Parameters: -vf {LibplaceboFilter} -x265-params {X265Params}
+  │                Force Encode: ON
+  │           → FFmpeg Builder: Executor
   ├─ 2 (P7/8.x/10) → FFmpeg Builder: Strip DoVi → FFmpeg Builder: Executor
   └─ 3 (Not DV) ─→ FFmpeg Builder: Executor   (or skip)
 ```
+
+Notes for Variant A:
+
+- **Disable Intel QSV is essential** — otherwise the Executor auto-picks
+  QSV decode, and libplacebo (a software filter) can't read QSV hardware
+  buffers ("*Impossible to convert between the formats supported by the
+  filter ... and ... auto_scale_0*").
+- **Encoder must be set explicitly to `libx265`**, not `Automatic`. On
+  Intel iGPU "Automatic" picks `hevc_qsv` even with QSV decode disabled,
+  and hevc_qsv doesn't accept `-x265-params`.
+- **Quality (CRF) comes from Video Encode Advanced**, not from
+  `set-libplacebo-options`. The script's `Crf` parameter still populates
+  `Variables.X265Crf` but it's informational only in this integration.
+  Set the value you want on the Video Encode Advanced "Quality" field.
+- **Speed (preset)** similarly comes from Video Encode Advanced. The
+  script's `Preset` parameter is informational only here.
+- For HDR content, CRF 22–24 is sensible. CRF 28 is on the lossy side
+  for 4K HDR10.
 
 **Variant B — Intel-iGPU `hevc_qsv` (near-realtime on iGPU, no master-display SEI)**
 
 ```
 route-dolby-vision-by-profile
-  ├─ 1 (P5) → set-hevc-qsv-options → FFmpeg Builder: Custom Parameters → FFmpeg Builder: Executor
-  │              [Parameters: -vf {LibplaceboFilter} -c:v hevc_qsv
-  │                           -global_quality {QsvGlobalQuality}
-  │                           -load_plugin hevc_hw -preset {QsvPreset}
-  │                           -profile:v main10 -pix_fmt {QsvPixFmt}
-  │                           -color_primaries bt2020 -color_trc smpte2084
-  │                           -colorspace bt2020nc
-  │               Force Encode: ON]
+  ├─ 1 (P5) → set-hevc-qsv-options
+  │           → FFmpeg Builder: Video Encode Advanced
+  │                (Codec=HEVC, Encoder=hevc_qsv or Automatic, Quality=22, Speed=Slow)
+  │           → FFmpeg Builder: Custom Parameters
+  │                Parameters: -vf {LibplaceboFilter}
+  │                            -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc
+  │                Force Encode: ON
+  │           → FFmpeg Builder: Executor
   ├─ 2 (P7/8.x/10) → FFmpeg Builder: Strip DoVi → FFmpeg Builder: Executor
   └─ 3 (Not DV) ─→ FFmpeg Builder: Executor   (or skip)
 ```
 
-For Variant B, **do not add `FFmpeg Builder: Disable Intel QSV`** to the P5 branch — the QSV-bridging filter chain (`hwdownload,format=p010le,...,hwupload`) needs the input frames to be in QSV hardware buffers. For Variant A, on an Intel-iGPU host you *do* want `Disable Intel QSV` on the P5 branch to force software decode so libplacebo gets software frames it can read directly.
+Notes for Variant B:
 
-**Caveat — confirmed by runner log**: do not place any `FFmpeg Builder:
-Video Encode*` element upstream of the route. Its stream parameters get
-appended *after* Custom Parameters in the compiled ffmpeg invocation, so
-the encoder it picks (often `hevc_qsv` on Intel iGPU under "Automatic")
-wins on `-c:v`, the `-x265-params` becomes dangling, and you'll see
-ffmpeg log "*Multiple -codec/-c/... options specified for stream 0, only
-the last option '-codec:v:0 hevc_qsv' will be used.*" If you want a HEVC
-encode on the non-P5 branches, drop the `Video Encode` element *into
-each of those branches individually*, not on the trunk.
+- **No `Disable Intel QSV`** on the P5 branch — the QSV-bridging filter
+  chain (`hwdownload,format=p010le,libplacebo=...,hwupload`) needs the
+  input frames to be in QSV hardware buffers.
+- **Quality / Preset / Pix-fmt come from Video Encode Advanced**, same
+  as Variant A. The Custom Parameters string only contributes the
+  libplacebo filter and HDR10 VUI tags.
+- **Caveat — not yet end-to-end verified.** Variant A is empirically
+  confirmed working; Variant B is the same structural fix applied to
+  the QSV path. Untested but expected to work.
+
+**Caveat that drove both designs**: do not place any `FFmpeg Builder:
+Video Encode*` element *upstream of the route element*. Its stream
+parameters get appended *after* Custom Parameters in the compiled ffmpeg
+invocation, so the encoder it picks wins on `-c:v` and the per-branch
+encoder choice gets clobbered. Place `Video Encode Advanced` *inside
+each branch* that should re-encode, never on the trunk.
 
 This way the rest of your Builder chain (Default Language, Primary Audio,
 Fall Back Audio, Set Audio/Subtitle Titles, Clear Video Title, Remux to

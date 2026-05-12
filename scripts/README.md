@@ -91,11 +91,19 @@ Every parameter is optional. Leaving them all at the FileFlows-supplied defaults
 
 | Name | Type | Used by |
 |---|---|---|
-| `Variables.LibplaceboFilter` | string | `transcode-libplacebo-hdr10`, or `${LibplaceboFilter}` in `FFmpeg Builder: Custom Parameters` |
-| `Variables.X265Params` | string | `transcode-libplacebo-hdr10`, or `${X265Params}` in `FFmpeg Builder: Custom Parameters` |
-| `Variables.X265Crf` | int | `${X265Crf}` |
-| `Variables.X265Preset` | string | `${X265Preset}` |
-| `Variables.X265PixFmt` | string | `${X265PixFmt}` |
+| `Variables.LibplaceboFilter` | string | `transcode-libplacebo-hdr10`, or `{LibplaceboFilter}` in `FFmpeg Builder: Custom Parameters` |
+| `Variables.X265Params` | string | `transcode-libplacebo-hdr10`, or `{X265Params}` in `FFmpeg Builder: Custom Parameters` |
+| `Variables.X265Crf` | int | `transcode-libplacebo-hdr10` (Shape C uses the Video Encode Advanced "Quality" field instead) |
+| `Variables.X265Preset` | string | `transcode-libplacebo-hdr10` (Shape C uses the Video Encode Advanced "Speed" field instead) |
+| `Variables.X265PixFmt` | string | `transcode-libplacebo-hdr10` (Shape C: Builder sets pix_fmt) |
+
+**Companion Custom Parameters string** (use with `FFmpeg Builder: Video Encode Advanced` set to HEVC / `libx265` explicitly / your chosen Quality+Speed on the same branch — Video Encode Advanced commits `libx265` into the Builder model so the Executor doesn't default the video stream to `-c:v:0 copy`):
+
+```
+-vf {LibplaceboFilter} -x265-params {X265Params}
+```
+
+The Builder element provides `-c:v libx265`, `-preset`, `-crf`, `-pix_fmt`, `-profile:v main10`. The Custom Parameters element only contributes the libplacebo filter and `-x265-params` (which bakes the HDR10 master-display / max-cll SEI into the encoded HEVC). The script's `Crf` / `Preset` / `PixelFormat` parameters become informational in this integration — set those values on the Video Encode Advanced element instead. Also drop `FFmpeg Builder: Disable Intel QSV` on the same branch *before* this script to force software decode (libplacebo can't read QSV hardware buffers).
 
 **Outputs**
 
@@ -132,11 +140,13 @@ The filter chain it emits is wrapped with `hwdownload,format=p010le,...,hwupload
 | `Variables.QsvPreset` | `-preset {QsvPreset}` |
 | `Variables.QsvPixFmt` | `-pix_fmt {QsvPixFmt}` (`p010le`) |
 
-**Companion Custom Parameters string**
+**Companion Custom Parameters string** (use with `FFmpeg Builder: Video Encode Advanced` set to HEVC / `hevc_qsv` or `Automatic` on the same branch — it commits the encoder into the Builder model; without it the Executor defaults the video stream to `-c:v:0 copy` and the libplacebo filter errors out):
 
 ```
--vf {LibplaceboFilter} -c:v hevc_qsv -global_quality {QsvGlobalQuality} -load_plugin hevc_hw -preset {QsvPreset} -profile:v main10 -pix_fmt {QsvPixFmt} -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc
+-vf {LibplaceboFilter} -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc
 ```
+
+The Builder element provides `-c:v hevc_qsv`, `-global_quality`, `-preset`, `-pix_fmt` from its Quality / Speed fields. The Custom Parameters element only contributes the libplacebo filter and the HDR10 VUI flags. The script's `GlobalQuality` / `Preset` parameters become informational in this integration — set the values on the Video Encode Advanced element instead.
 
 **Outputs**
 
